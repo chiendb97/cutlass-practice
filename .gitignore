@@ -1,0 +1,17 @@
+__pycache__/
+.idea/
+.vscode
+*.cache
+*.nsys-rep
+.VSCodeCounter
+*build*/
+*.so
+*.egg-info/
+.coverage
+*.csv
+*.onnx
+tmp/
+logs/
+*/*build*/
+.env/
+*.log
