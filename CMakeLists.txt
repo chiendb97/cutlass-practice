@@ -1,20 +1,3 @@
-#
-# SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION &
-# AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License"); you may not
-# use this file except in compliance with the License. You may obtain a copy of
-# the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations under
-# the License.
-#
-
 cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -183,6 +166,7 @@ if(ENABLE_MULTI_DEVICE EQUAL 1)
     find_library(NCCL_LIB nccl HINTS ${NCCL_LIB_DIR})
 endif()
 
+# Declare Cutlass as a dependency only once
 FetchContent_Declare(
         cutlass
         GIT_REPOSITORY https://github.com/NVIDIA/cutlass.git
@@ -190,7 +174,11 @@ FetchContent_Declare(
         CMAKE_ARGS -DCUTLASS_NVCC_ARCHS=${CUDA_ARCHITECTURES}
 )
 
-FetchContent_MakeAvailable(cutlass)
+FetchContent_GetProperties(cutlass)
+if(NOT cutlass_POPULATED)
+    FetchContent_Populate(cutlass)
+    add_subdirectory(${cutlass_SOURCE_DIR} ${cutlass_BINARY_DIR})
+endif()
 
 include_directories(
         ${CUDAToolkit_INCLUDE_DIRS}
@@ -333,7 +321,6 @@ function(cutlass_practice_add_executable NAME)
 
     set_target_properties(${NAME} PROPERTIES CUDA_ARCHITECTURES ${CUDA_ARCHITECTURES})
 
-
     install(
             TARGETS ${NAME}
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
@@ -341,6 +328,4 @@ function(cutlass_practice_add_executable NAME)
 
 endfunction()
 
-
 add_subdirectory(basic)
-
