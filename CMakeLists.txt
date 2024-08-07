@@ -166,26 +166,15 @@ if(ENABLE_MULTI_DEVICE EQUAL 1)
     find_library(NCCL_LIB nccl HINTS ${NCCL_LIB_DIR})
 endif()
 
-# Declare Cutlass as a dependency only once
-FetchContent_Declare(
-        cutlass
-        GIT_REPOSITORY https://github.com/NVIDIA/cutlass.git
-        GIT_TAG v3.5.0
-        CMAKE_ARGS -DCUTLASS_NVCC_ARCHS=${CUDA_ARCHITECTURES}
-)
-
-FetchContent_GetProperties(cutlass)
-if(NOT cutlass_POPULATED)
-    FetchContent_Populate(cutlass)
-    add_subdirectory(${cutlass_SOURCE_DIR} ${cutlass_BINARY_DIR})
-endif()
+set(CMAKE_PREFIX_PATH ${CUTLASS_SOURCE_DIR}/build/install)
+find_package(NvidiaCutlass REQUIRED)
 
 include_directories(
         ${CUDAToolkit_INCLUDE_DIRS}
         ${CUDNN_ROOT_DIR}/include
         ${NCCL_INCLUDE_DIR}
-        ${cutlass_SOURCE_DIR}/include
-        ${cutlass_SOURCE_DIR}/tools/util/include)
+        ${CUTLASS_SOURCE_DIR}/include
+        ${CUTLASS_SOURCE_DIR}/tools/util/include)
 
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR}")
 
@@ -275,7 +264,7 @@ function(cutlass_apply_standard_compile_options TARGET)
         set(_FLAGS_DEBUG ${__CUTLASS_CUDA_FLAGS_DEBUG} ${__CUTLASS_CUDA_NVCC_FLAGS_DEBUG})
     endif()
 
-    target_link_libraries(${TARGET} PRIVATE cutlass_lib cutlass_tools_util_includes)
+    target_link_libraries(${TARGET} PRIVATE nvidia::cutlass::library::includes nvidia::cutlass::tools::util)
 
     target_compile_options(
             ${TARGET}
@@ -306,8 +295,8 @@ function(cutlass_practice_add_executable NAME)
     target_link_libraries(
             ${NAME}
             PRIVATE
-            cutlass_lib
-            cutlass_tools_util_includes
+            nvidia::cutlass::library::includes
+            nvidia::cutlass::tools::util
             $<$<BOOL:${CUTLASS_ENABLE_CUBLAS}>:nvidia::cublas>
             cuda
     )
