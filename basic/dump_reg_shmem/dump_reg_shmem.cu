@@ -77,7 +77,6 @@ __global__ void kernel_dump(typename GmemIterator::Params params,
 }
 
 int main() {
-  // Initialize a 64x32 column major matrix with sequential data (1,2,3...).
   using Element = cutlass::half_t;
   using Layout = cutlass::layout::ColumnMajor;
 
@@ -90,7 +89,6 @@ int main() {
 
   matrix.sync_device();
 
-  // Define a global iterator, a shared iterator and their thread map.
   using ThreadMap = cutlass::transform::PitchLinearWarpRakedThreadMap<
       cutlass::layout::PitchLinearShape<EXAMPLE_MATRIX_ROW, EXAMPLE_MATRIX_COL>,
       32, cutlass::layout::PitchLinearShape<8, 4>, 8>;
