@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CUTLASS_NVCC_EMBED_CUBIN ON CACHE BOOL "Embed compiled CUDA kernel binaries into executables.")
+set(CUTLASS_NVCC_EMBED_PTX ON CACHE BOOL "Embed compiled PTX into executables.")
 
 include(CheckLanguage)
 include(FetchContent)
@@ -14,9 +16,9 @@ project(cutlass_practice LANGUAGES CXX)
 
 # Determine CUDA version before enabling the language extension
 check_language(CUDA)
-if(CMAKE_CUDA_COMPILER)
+if (CMAKE_CUDA_COMPILER)
     message(STATUS "CUDA compiler: ${CMAKE_CUDA_COMPILER}")
-    if(NOT WIN32) # Linux
+    if (NOT WIN32) # Linux
         execute_process(
                 COMMAND
                 "bash" "-c"
@@ -25,55 +27,46 @@ if(CMAKE_CUDA_COMPILER)
                 OUTPUT_VARIABLE CMAKE_CUDA_COMPILER_VERSION
                 OUTPUT_STRIP_TRAILING_WHITESPACE)
 
-        if(NOT _BASH_SUCCESS EQUAL 0)
+        if (NOT _BASH_SUCCESS EQUAL 0)
             message(FATAL_ERROR "Failed to determine CUDA version")
-        endif()
+        endif ()
 
-    else() # Windows
+    else () # Windows
         execute_process(
                 COMMAND ${CMAKE_CUDA_COMPILER} --version
                 OUTPUT_VARIABLE versionString
                 RESULT_VARIABLE versionResult)
 
-        if(versionResult EQUAL 0 AND versionString MATCHES
+        if (versionResult EQUAL 0 AND versionString MATCHES
                 "V[0-9]+\\.[0-9]+\\.[0-9]+")
             string(REGEX REPLACE "V" "" version ${CMAKE_MATCH_0})
             set(CMAKE_CUDA_COMPILER_VERSION "${version}")
-        else()
+        else ()
             message(FATAL_ERROR "Failed to determine CUDA version")
-        endif()
-    endif()
-else()
+        endif ()
+    endif ()
+else ()
     message(FATAL_ERROR "No CUDA compiler found")
-endif()
+endif ()
 
 set(CUDA_REQUIRED_VERSION "11.2")
-if(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS CUDA_REQUIRED_VERSION)
+if (CMAKE_CUDA_COMPILER_VERSION VERSION_LESS CUDA_REQUIRED_VERSION)
     message(
             FATAL_ERROR
             "CUDA version ${CMAKE_CUDA_COMPILER_VERSION} must be at least ${CUDA_REQUIRED_VERSION}"
     )
-endif()
+endif ()
 
 # Initialize CMAKE_CUDA_ARCHITECTURES before enabling CUDA
-if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL "11.8")
+if (NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    if (CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL "11.8")
         set(CMAKE_CUDA_ARCHITECTURES 70-real 80-real 86-real 89-real 90-real)
-    else()
+    else ()
         set(CMAKE_CUDA_ARCHITECTURES 70-real 80-real 86-real)
-    endif()
-endif()
+    endif ()
+endif ()
 
-# Initialize CMAKE_CUDA_ARCHITECTURES before enabling CUDA
-if(NOT DEFINED CUDA_ARCHITECTURES)
-    if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL "11.8")
-        set(CUDA_ARCHITECTURES 70 80 86 89 90)
-    else()
-        set(CMAKE_CUDA_ARCHITECTURES 70 80 86)
-    endif()
-endif()
-
-if(CMAKE_CUDA_ARCHITECTURES STREQUAL "native")
+if (CMAKE_CUDA_ARCHITECTURES STREQUAL "native")
     # Detect highest available compute capability
     set(OUTPUTFILE ${PROJECT_BINARY_DIR}/detect_cuda_arch)
     set(CUDAFILE ${CMAKE_SOURCE_DIR}/cmake/utils/detect_cuda_arch.cu)
@@ -84,19 +77,19 @@ if(CMAKE_CUDA_ARCHITECTURES STREQUAL "native")
             COMMAND ${OUTPUTFILE}
             RESULT_VARIABLE CUDA_RETURN_CODE
             OUTPUT_VARIABLE CUDA_ARCH_OUTPUT)
-    if(NOT ${CUDA_RETURN_CODE} EQUAL 0)
+    if (NOT ${CUDA_RETURN_CODE} EQUAL 0)
         message(WARNING "Detecting native CUDA compute capability - fail")
         message(
                 WARNING "CUDA compute capability detection failed, compiling for 'all'")
         set(CMAKE_CUDA_ARCHITECTURES_ORIG "all")
-    else()
+    else ()
         message(STATUS "Detecting native CUDA compute capability - done")
         set(CMAKE_CUDA_ARCHITECTURES_ORIG "${CUDA_ARCH_OUTPUT}")
-    endif()
-else()
+    endif ()
+else ()
     # Store CMAKE_CUDA_ARCHITECTURES for later use since torch sets this to "OFF"
     set(CMAKE_CUDA_ARCHITECTURES_ORIG "${CMAKE_CUDA_ARCHITECTURES}")
-endif()
+endif ()
 message(STATUS "GPU architectures: ${CMAKE_CUDA_ARCHITECTURES_ORIG}")
 
 enable_language(C CXX CUDA)
@@ -114,10 +107,43 @@ message(STATUS "    include path: ${CUDAToolkit_INCLUDE_DIRS}")
 # pick up on the includes
 set(CMAKE_CUDA_USE_RESPONSE_FILE_FOR_INCLUDES 0)
 
-if(USE_SHARED_NVRTC)
-    if(WIN32)
+set(CUTLASS_NVCC_ARCHS_SUPPORTED "")
+if (CUDA_VERSION VERSION_GREATER_EQUAL 11.4 AND NOT CUDA_COMPILER MATCHES "[Cc]lang")
+    list(APPEND CUTLASS_NVCC_ARCHS_SUPPORTED 70 72 75 80 86 87)
+endif ()
+if (CUDA_VERSION VERSION_GREATER_EQUAL 11.8 AND NOT CUDA_COMPILER MATCHES "[Cc]lang")
+    list(APPEND CUTLASS_NVCC_ARCHS_SUPPORTED 89 90)
+endif ()
+if (CUDA_VERSION VERSION_GREATER_EQUAL 12.0 AND NOT CUDA_COMPILER MATCHES "[Cc]lang")
+    list(APPEND CUTLASS_NVCC_ARCHS_SUPPORTED 90a)
+endif ()
+
+set(CUTLASS_NVCC_ARCHS ${CUTLASS_NVCC_ARCHS_SUPPORTED} CACHE STRING "The SM architectures requested.")
+set(CUTLASS_NVCC_ARCHS_ENABLED ${CUTLASS_NVCC_ARCHS} CACHE STRING "The SM architectures to build code for.")
+
+message(STATUS "CUTLASS_NVCC_ARCHS_SUPPORTED: ${CUTLASS_NVCC_ARCHS_SUPPORTED}")
+message(STATUS "CUTLASS_NVCC_ARCHS_ENABLED: ${CUTLASS_NVCC_ARCHS_ENABLED}")
+
+# Find unsupported and deprecated compute capabilities
+if (CUTLASS_NVCC_ARCHS_SUPPORTED)
+    set(CUTLASS_NVCC_ARCHS_UNSUPPORTED ${CUTLASS_NVCC_ARCHS})
+    list(REMOVE_ITEM CUTLASS_NVCC_ARCHS_UNSUPPORTED ${CUTLASS_NVCC_ARCHS_SUPPORTED})
+    if (CUTLASS_NVCC_ARCHS_UNSUPPORTED)
+        message(WARNING "Using unsupported or deprecated compute capabilities ${CUTLASS_NVCC_ARCHS_UNSUPPORTED}. Support may be removed in future versions.")
+    endif ()
+else ()
+    message(WARNING "No supported compute capabilities for CUDA ${CUDA_VERSION}.")
+endif ()
+
+# Special policy introduced in CMake 3.13
+if (POLICY CMP0076)
+    cmake_policy(SET CMP0076 NEW)
+endif ()
+
+if (USE_SHARED_NVRTC)
+    if (WIN32)
         message(FATAL_ERROR "Cannot use NVRTC shared library on Windows.")
-    else()
+    else ()
         find_library(
                 NVRTC_LIB nvrtc
                 HINTS ${CUDAToolkit_LIBRARY_DIR}
@@ -126,14 +152,14 @@ if(USE_SHARED_NVRTC)
                 NVRTC_BUILTINS_LIB nvrtc-builtins
                 HINTS ${CUDAToolkit_LIBRARY_DIR}
                 PATH_SUFFIXES lib64 lib lib/x64)
-    endif()
-else()
-    if(WIN32)
+    endif ()
+else ()
+    if (WIN32)
         find_library(
                 NVRTC_LIB nvrtc
                 HINTS ${CUDAToolkit_LIBRARY_DIR}
                 PATH_SUFFIXES lib64 lib lib/x64)
-    else()
+    else ()
         find_library(
                 NVRTC_LIB nvrtc_static
                 HINTS ${CUDAToolkit_LIBRARY_DIR}
@@ -146,8 +172,8 @@ else()
                 NVPTXCOMPILER_LIB nvptxcompiler_static
                 HINTS ${CUDAToolkit_LIBRARY_DIR}
                 PATH_SUFFIXES lib64 lib lib/x64)
-    endif()
-endif()
+    endif ()
+endif ()
 
 set(CUBLAS_LIB CUDA::cublas)
 set(CUBLASLT_LIB CUDA::cublasLt)
@@ -159,12 +185,12 @@ set(CMAKE_CUDA_RUNTIME_LIBRARY Static)
 find_library(RT_LIB rt)
 
 set_ifndef(ENABLE_MULTI_DEVICE 1)
-if(ENABLE_MULTI_DEVICE EQUAL 1)
+if (ENABLE_MULTI_DEVICE EQUAL 1)
     # NCCL dependencies
     set_ifndef(NCCL_LIB_DIR /usr/lib/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu/)
     set_ifndef(NCCL_INCLUDE_DIR /usr/include/)
     find_library(NCCL_LIB nccl HINTS ${NCCL_LIB_DIR})
-endif()
+endif ()
 
 set(CMAKE_PREFIX_PATH ${CUTLASS_SOURCE_DIR}/build/install)
 find_package(NvidiaCutlass REQUIRED)
@@ -182,7 +208,6 @@ set(CUTLASS_PRACTICE_COMMON_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/common)
 
 add_custom_target(cutlass_practice)
 
-
 function(cutlass_apply_cuda_gencode_flags TARGET)
     set(options)
     set(oneValueArgs)
@@ -191,27 +216,27 @@ function(cutlass_apply_cuda_gencode_flags TARGET)
 
     if (__SM_ARCHS)
         set(ARCHS_ENABLED ${__SM_ARCHS})
-    else()
+    else ()
         set(ARCHS_ENABLED ${CUTLASS_NVCC_ARCHS_ENABLED})
-    endif()
+    endif ()
 
     set(NVCC_FLAGS)
     set(CLANG_FLAGS)
     set(__CMAKE_CUDA_ARCHS)
-    foreach(ARCH ${ARCHS_ENABLED})
+    foreach (ARCH ${ARCHS_ENABLED})
         list(APPEND CLANG_FLAGS --cuda-gpu-arch=sm_${ARCH})
         set(CODES)
-        if(CUTLASS_NVCC_EMBED_CUBIN)
+        if (CUTLASS_NVCC_EMBED_CUBIN)
             list(APPEND CODES sm_${ARCH})
             list(APPEND __CMAKE_CUDA_ARCHS ${ARCH}-real)
-        endif()
-        if(CUTLASS_NVCC_EMBED_PTX)
+        endif ()
+        if (CUTLASS_NVCC_EMBED_PTX)
             list(APPEND CODES compute_${ARCH})
             list(APPEND __CMAKE_CUDA_ARCHS ${ARCH}-virtual)
-        endif()
+        endif ()
         list(JOIN CODES "," CODES_STR)
         list(APPEND NVCC_FLAGS -gencode=arch=compute_${ARCH},code=[${CODES_STR}])
-    endforeach()
+    endforeach ()
 
     if (NOT __SM_ARCHS)
         if (CUDA_COMPILER MATCHES "[Cc]lang")
@@ -220,49 +245,49 @@ function(cutlass_apply_cuda_gencode_flags TARGET)
                     PRIVATE
                     $<$<COMPILE_LANGUAGE:CXX>:${CLANG_FLAGS}>
             )
-        elseif(CMAKE_VERSION GREATER_EQUAL 3.18)
+        elseif (CMAKE_VERSION GREATER_EQUAL 3.18)
             set_property(TARGET ${TARGET} PROPERTY CUDA_ARCHITECTURES ${__CMAKE_CUDA_ARCHS})
-        else()
+        else ()
             target_compile_options(
                     ${TARGET}
                     PRIVATE
                     $<$<COMPILE_LANGUAGE:CUDA>:${NVCC_FLAGS}>
             )
-        endif()
-    else()
+        endif ()
+    else ()
         list(JOIN CLANG_FLAGS " " CLANG_FLAGS_STR)
         list(JOIN NVCC_FLAGS " " STR_NVCC_FLAGS)
         if (CUDA_COMPILER MATCHES "[Cc]lang")
-            if(${TARGET} MATCHES ".*\.cpp")
+            if (${TARGET} MATCHES ".*\.cpp")
                 set_source_files_properties(${TARGET} PROPERTIES COMPILE_FLAGS ${CLANG_FLAGS_STR})
-            endif()
-        elseif(CMAKE_VERSION GREATER_EQUAL 3.18)
+            endif ()
+        elseif (CMAKE_VERSION GREATER_EQUAL 3.18)
             set_source_files_properties(${TARGET} PROPERTIES CUDA_ARCHITECTURES ${STR_NVCC_FLAGS})
-        else()
-            if(${TARGET} MATCHES ".*\.cu")
+        else ()
+            if (${TARGET} MATCHES ".*\.cu")
                 set_source_files_properties(${TARGET} PROPERTIES COMPILE_FLAGS ${STR_NVCC_FLAGS})
-            endif()
-        endif()
-    endif()
+            endif ()
+        endif ()
+    endif ()
 
 endfunction()
 
 
 function(cutlass_apply_standard_compile_options TARGET)
 
-    if(CUDA_COMPILER MATCHES "[Cc]lang")
+    if (CUDA_COMPILER MATCHES "[Cc]lang")
         set(CUDA_COMPILE_LANGUAGE CXX)
         set(_FLAGS ${__CUTLASS_CUDA_FLAGS} ${__CUTLASS_CUDA_CLANG_FLAGS})
         set(_FLAGS_RELEASE ${__CUTLASS_CUDA_FLAGS_RELEASE} ${__CUTLASS_CUDA_CLANG_FLAGS_RELEASE})
         set(_FLAGS_RELWITHDEBINFO ${__CUTLASS_CUDA_FLAGS_RELWITHDEBINFO} ${__CUTLASS_CUDA_CLANG_FLAGS_RELWITHDEBINFO})
         set(_FLAGS_DEBUG ${__CUTLASS_CUDA_FLAGS_DEBUG} ${__CUTLASS_CUDA_CLANG_FLAGS_DEBUG})
-    else()
+    else ()
         set(CUDA_COMPILE_LANGUAGE CUDA)
         set(_FLAGS ${__CUTLASS_CUDA_FLAGS} ${__CUTLASS_CUDA_NVCC_FLAGS})
         set(_FLAGS_RELEASE ${__CUTLASS_CUDA_FLAGS_RELEASE} ${__CUTLASS_CUDA_NVCC_FLAGS_RELEASE})
         set(_FLAGS_RELWITHDEBINFO ${__CUTLASS_CUDA_FLAGS_RELWITHDEBINFO} ${__CUTLASS_CUDA_NVCC_FLAGS_RELWITHDEBINFO})
         set(_FLAGS_DEBUG ${__CUTLASS_CUDA_FLAGS_DEBUG} ${__CUTLASS_CUDA_NVCC_FLAGS_DEBUG})
-    endif()
+    endif ()
 
     target_link_libraries(${TARGET} PRIVATE nvidia::cutlass::library::includes nvidia::cutlass::tools::util)
 
@@ -286,7 +311,7 @@ function(cutlass_practice_add_executable NAME)
 
     if (NOT DEFINED __DISABLE_TESTS)
         set(__DISABLE_TESTS OFF)
-    endif()
+    endif ()
 
     cutlass_add_executable(${NAME} ${__UNPARSED_ARGUMENTS} BATCH_SOURCES OFF)
 

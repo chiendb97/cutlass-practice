@@ -12,34 +12,23 @@
 
 
 template<class ProblemShape, class CtaTiler,
-        class TA, class AStride, class ASmemLayout, class AThreadLayout,
-        class TB, class BStride, class BSmemLayout, class BThreadLayout,
-        class TC, class CStride, class CSmemLayout, class CThreadLayout,
+        class TA, class AStride, class ASmemLayout, class TiledCopyA,
+        class TB, class BStride, class BSmemLayout, class TiledCopyB,
+        class TC, class CStride, class CSmemLayout, class TiledMma,
         class Alpha, class Beta>
 __global__ static
-__launch_bounds__(decltype(size(CThreadLayout{}))::value)
+__launch_bounds__(decltype(size(TiledMma{}))::value)
 void
 gemm_device(ProblemShape shape_MNK, CtaTiler cta_tiler,
-            TA const *A, AStride dA, ASmemLayout sA_layout, AThreadLayout tA,
-            TB const *B, BStride dB, BSmemLayout sB_layout, BThreadLayout tB,
-            TC *C, CStride dC, CSmemLayout, CThreadLayout tC,
+            TA const *A, AStride dA, ASmemLayout sA_layout, TiledCopyA copyA,
+            TB const *B, BStride dB, BSmemLayout sB_layout, TiledCopyB copyB,
+            TC *C, CStride dC, CSmemLayout, TiledMma mma,
             Alpha alpha, Beta beta) {
     CUTE_STATIC_ASSERT_V(cute::rank(shape_MNK) == cute::Int<3>{});
     CUTE_STATIC_ASSERT_V(cute::rank(cta_tiler) == cute::Int<3>{});
 
-    static_assert(cute::is_static<AThreadLayout>::value);
-    static_assert(cute::is_static<BThreadLayout>::value);
-    static_assert(cute::is_static<CThreadLayout>::value);
-
-    CUTE_STATIC_ASSERT_V(size(tA) == size(tB));                          // NumThreads
-    CUTE_STATIC_ASSERT_V(size(tC) == size(tA));                          // NumThreads
-
-    CUTE_STATIC_ASSERT_V(cute::size<0>(cta_tiler) % cute::size<0>(tA) == cute::Int<0>{});  // BLK_M / THR_M
-    CUTE_STATIC_ASSERT_V(cute::size<2>(cta_tiler) % cute::size<1>(tA) == cute::Int<0>{});  // BLK_K / THR_K
-    CUTE_STATIC_ASSERT_V(cute::size<1>(cta_tiler) % cute::size<0>(tB) == cute::Int<0>{});  // BLK_N / THR_N
-    CUTE_STATIC_ASSERT_V(cute::size<2>(cta_tiler) % cute::size<1>(tB) == cute::Int<0>{});  // BLK_K / THR_K
-    CUTE_STATIC_ASSERT_V(cute::size<0>(cta_tiler) % cute::size<0>(tC) == cute::Int<0>{});  // BLK_M / THR_M
-    CUTE_STATIC_ASSERT_V(cute::size<1>(cta_tiler) % cute::size<1>(tC) == cute::Int<0>{});  // BLK_N / THR_N
+    CUTE_STATIC_ASSERT_V(size(copyA) == size(mma));
+    CUTE_STATIC_ASSERT_V(size(copyB) == size(mma));
 
     static_assert(cute::is_static<ASmemLayout>::value);
     static_assert(cute::is_static<BSmemLayout>::value);
@@ -61,7 +50,6 @@ gemm_device(ProblemShape shape_MNK, CtaTiler cta_tiler,
     cute::Tensor mC = cute::make_tensor(cute::make_gmem_ptr(C), cute::select<0, 1>(shape_MNK), dC);
 
     auto cta_coord = cute::make_coord(blockIdx.x, blockIdx.y, cute::_);
-
     cute::Tensor gA = cute::local_tile(mA, cta_tiler, cta_coord, cute::Step<cute::_1, cute::X, cute::_1>{});
     cute::Tensor gB = cute::local_tile(mA, cta_tiler, cta_coord, cute::Step<cute::X, cute::_1, cute::_1>{});
     cute::Tensor gC = cute::local_tile(mC, cta_tiler, cta_coord, cute::Step<cute::_1, cute::_1, cute::X>{});
@@ -72,28 +60,39 @@ gemm_device(ProblemShape shape_MNK, CtaTiler cta_tiler,
     cute::Tensor sA = cute::make_tensor(cute::make_smem_ptr(smemA), sA_layout);
     cute::Tensor sB = cute::make_tensor(cute::make_smem_ptr(smemB), sB_layout);
 
-    cute::Tensor tAgA = cute::local_partition(gA, tA, threadIdx.x);
-    cute::Tensor tAsA = cute::local_partition(sA, tA, threadIdx.x);
+    auto thr_copyA = copyA.get_slice(threadIdx.x);
+    cute::Tensor tAgA = thr_copyA.partition_S(gA);
+    cute::Tensor tAsA = thr_copyA.partition_D(sA);
+    cute::Tensor tArA = cute::make_fragment_like(tAsA);
 
-    cute::Tensor tBgB = cute::local_partition(gB, tB, threadIdx.x);
-    cute::Tensor tBsB = cute::local_partition(sB, tB, threadIdx.x);
+    auto thr_copyB = copyB.get_slice(threadIdx.x);
+    cute::Tensor tBgB = thr_copyB.partition_S(gB);
+    cute::Tensor tBsB = thr_copyB.partition_D(sB);
+    cute::Tensor tBrB = cute::make_fragment_like(tBsB);
 
-    CUTE_STATIC_ASSERT_V(cute::size<0>(tAgA) == cute::size<0>(tAsA));                // THR_M
-    CUTE_STATIC_ASSERT_V(cute::size<1>(tAgA) == cute::size<1>(tAsA));                // THR_K
-    CUTE_STATIC_ASSERT_V(cute::size<0>(tBgB) == cute::size<0>(tBsB));                // THR_N
-    CUTE_STATIC_ASSERT_V(cute::size<1>(tBgB) == cute::size<1>(tBsB));                // THR_K
+    CUTE_STATIC_ASSERT_V(cute::size<1>(tAgA) == cute::size<1>(tAsA));                // CPY_M
+    CUTE_STATIC_ASSERT_V(cute::size<1>(tAgA) == cute::size<1>(tArA));                // CPY_M
+    CUTE_STATIC_ASSERT_V(cute::size<2>(tAgA) == cute::size<2>(tAsA));                // CPY_K
+    CUTE_STATIC_ASSERT_V(cute::size<2>(tAgA) == cute::size<2>(tArA));                // CPY_K
+    CUTE_STATIC_ASSERT_V(cute::size<1>(tBgB) == cute::size<1>(tBsB));                // CPY_N
+    CUTE_STATIC_ASSERT_V(cute::size<1>(tBgB) == cute::size<1>(tBrB));                // CPY_N
+    CUTE_STATIC_ASSERT_V(cute::size<2>(tBgB) == cute::size<2>(tBsB));                // CPY_K
+    CUTE_STATIC_ASSERT_V(cute::size<2>(tBgB) == cute::size<2>(tBrB));                // CPY_K
 
-    cute::Tensor tCsA = cute::local_partition(sA, tC, threadIdx.x, cute::Step<cute::_1, cute::X>{});
-    cute::Tensor tCsB = cute::local_partition(sB, tC, threadIdx.x, cute::Step<cute::X, cute::_1>{});
-    cute::Tensor tCgC = cute::local_partition(gC, tC, threadIdx.x, cute::Step<cute::_1, cute::_1>{});
+    cute::copy(copyA, tAgA(cute::_, cute::_, cute::_, 0), tArA);
+    cute::copy(copyB, tBgB(cute::_, cute::_, cute::_, 0), tBrB);
 
-    cute::Tensor tCrC = cute::make_tensor_like(tCgC);
+    auto thr_mma = mma.get_slice(threadIdx.x);
+    auto tCsA = thr_mma.partition_A(sA);
+    auto tCsB = thr_mma.partition_B(sB);
+    auto tCgC = thr_mma.partition_C(gC);
 
-    CUTE_STATIC_ASSERT_V(cute::size<0>(tCrC) == cute::size<0>(tCgC));                // THR_M
-    CUTE_STATIC_ASSERT_V(cute::size<0>(tCrC) == cute::size<0>(tCsA));                // THR_M
-    CUTE_STATIC_ASSERT_V(cute::size<1>(tCrC) == cute::size<1>(tCgC));                // THR_N
-    CUTE_STATIC_ASSERT_V(cute::size<1>(tCrC) == cute::size<0>(tCsB));                // THR_N
-    CUTE_STATIC_ASSERT_V(cute::size<1>(tCsA) == cute::size<1>(tCsB));                // BLK_K
+    cute::Tensor tCrC = thr_mma.make_fragment_C(tCgC);
+
+    CUTE_STATIC_ASSERT_V(cute::shape(tCrC) == cute::shape(tCgC));
+    CUTE_STATIC_ASSERT_V(cute::size<1>(tCrC) == cute::size<1>(tCsA));
+    CUTE_STATIC_ASSERT_V(cute::size<2>(tCrC) == cute::size<1>(tCsB));
+    CUTE_STATIC_ASSERT_V(cute::size<2>(tCsA) == cute::size<2>(tCsB));
 
     cute::clear(tCrC);
 
@@ -129,17 +128,18 @@ gemm_device(ProblemShape shape_MNK, CtaTiler cta_tiler,
 #endif
 
 #if 1
-    auto K_TILE_MAX = cute::size<2>(tAgA);
+    auto K_TILE_MAX = cute::size<3>(tAgA);
     for (int k_tile = 0; k_tile < K_TILE_MAX; ++k_tile) {
-        cute::copy(tAgA(cute::_, cute::_, k_tile), tAsA);
-        cute::copy(tBgB(cute::_, cute::_, k_tile), tBsB);
-
-        cute::cp_async_fence();
-        cute::cp_async_wait<0>();
+        __syncthreads();
+        copy(tArA, tAsA);
+        copy(tBrB, tBsB);
         __syncthreads();
 
-        cute::gemm(tCsA, tCsB, tCrC);
-        __syncthreads();
+        int k_tile_next = (k_tile + 1 < K_TILE_MAX) ? k_tile + 1 : k_tile;
+        copy(copyA, tAgA(cute::_, cute::_, cute::_, k_tile_next), tArA);
+        copy(copyB, tBgB(cute::_, cute::_, cute::_, k_tile_next), tBrB);
+
+        cute::gemm(mma, tCsA, tCsB, tCrC);
     }
 #endif
 
@@ -173,19 +173,43 @@ gemm_nt(int m, int n, int k,
     auto sB = cute::make_layout(cute::make_shape(bN, bK));
     auto sC = cute::make_layout(cute::make_shape(bM, bN));
 
-    auto tA = cute::make_layout(cute::make_shape(cute::Int<32>{}, cute::Int<8>{}));
-    auto tB = cute::make_layout(cute::make_shape(cute::Int<32>{}, cute::Int<8>{}));
-    auto tC = cute::make_layout(cute::make_shape(cute::Int<16>{}, cute::Int<16>{}));
+    auto copyA = cute::make_tiled_copy(cute::Copy_Atom<cute::UniversalCopy<cute::uint128_t>, TA>{},
+    cute::Layout < cute::Shape<cute::_32, cute::_8>>
+    {},
+    cute::Layout < cute::Shape<cute::_4, cute::_1>>
+    {});
 
-    dim3 dimBlock(cute::size(tC));
+    auto copyB = cute::make_tiled_copy(cute::Copy_Atom<cute::UniversalCopy<cute::uint128_t>, TB>{},
+    cute::Layout < cute::Shape<cute::_32, cute::_8>>
+    {},
+    cute::Layout < cute::Shape<cute::_4, cute::_1>>
+    {});
+
+    auto mma = cute::make_tiled_mma(cute::UniversalFMA<TC, TA, TB>{},
+    cute::Layout < cute::Shape<cute::_16, cute::_16, cute::_1>>
+    {});
+
+#if 0
+    print(copyA);
+    print(copyB);
+    print(mma);
+#endif
+
+#if 0
+    print_latex(copyA);
+    print_latex(copyB);
+    print_latex(mma);
+#endif
+
+    dim3 dimBlock(cute::size(mma));
     dim3 dimGrid(cute::size(ceil_div(M, bM)),
                  cute::size(ceil_div(N, bN)));
 
     gemm_device<<<dimGrid, dimBlock, 0, stream>>>
             (prob_shape, cta_tiler,
-             A, dA, sA, tA,
-             B, dB, sB, tB,
-             C, dC, sC, tC,
+             A, dA, sA, copyA,
+             B, dB, sB, copyB,
+             C, dC, sC, mma,
              alpha, beta);
 }
 
@@ -212,23 +236,49 @@ gemm_tn(int m, int n, int k,
     auto bK = cute::Int<8>{};
     auto cta_tiler = cute::make_shape(bM, bN, bK);
 
-    auto sA = cute::make_layout(cute::make_shape(bM, bK), cute::LayoutRight{});
-    auto sB = cute::make_layout(cute::make_shape(bN, bK), cute::LayoutRight{});
+    auto sA = cute::make_layout(cute::make_shape(bM, bK),
+                                cute::make_stride(cute::Int<1>{}, bM + cute::Int<1>{}));
+    auto sB = cute::make_layout(cute::make_shape(bN, bK),
+                                cute::make_stride(cute::Int<1>{}, bN + cute::Int<1>{}));
     auto sC = cute::make_layout(cute::make_shape(bM, bN));
 
-    auto tA = cute::make_layout(cute::make_shape(cute::Int<32>{}, cute::Int<8>{}), cute::LayoutRight{});
-    auto tB = cute::make_layout(cute::make_shape(cute::Int<32>{}, cute::Int<8>{}), cute::LayoutRight{});
-    auto tC = cute::make_layout(cute::make_shape(cute::Int<16>{}, cute::Int<16>{}));
+    auto copyA = cute::make_tiled_copy(cute::Copy_Atom<cute::UniversalCopy<TA>, TA>{},
+    cute::Layout < cute::Shape<cute::_32, cute::_8>, cute::Stride<cute::_8, cute::_1>>
+    {},
+    cute::Layout < cute::Shape<cute::_1, cute::_1>>
+    {});
 
-    dim3 dimBlock(cute::size(tC));
+    auto copyB = cute::make_tiled_copy(cute::Copy_Atom<cute::UniversalCopy<TA>, TB>{},
+    cute::Layout < cute::Shape<cute::_32, cute::_8>, cute::Stride<cute::_8, cute::_1>>
+    {},
+    cute::Layout < cute::Shape<cute::_1, cute::_1>>
+    {});
+
+    auto mma = cute::make_tiled_mma(cute::UniversalFMA<TC, TA, TB>{},
+    cute::Layout < cute::Shape<cute::_16, cute::_16, cute::_1>>
+    {});
+
+#if 0
+    print(copyA);
+    print(copyB);
+    print(mma);
+#endif
+
+#if 0
+    print_latex(copyA);
+    print_latex(copyB);
+    print_latex(mma);
+#endif
+
+    dim3 dimBlock(cute::size(mma));
     dim3 dimGrid(cute::size(ceil_div(M, bM)),
                  cute::size(ceil_div(N, bN)));
 
-    gemm_device<<<dimBlock, dimGrid>>>
+    gemm_device<<<dimGrid, dimBlock, 0, stream>>>
             (prob_shape, cta_tiler,
-             A, dA, sA, tA,
-             B, dB, sB, tB,
-             C, dC, sC, tC,
+             A, dA, sA, copyA,
+             B, dB, sB, copyB,
+             C, dC, sC, mma,
              alpha, beta);
 }
 
@@ -305,7 +355,6 @@ int main(int argc, char **argv) {
     }
 
     for (int i = 0; i < m * n; ++i) {
-        h_C[i] = static_cast<TC>(-1);
         h_C[i] = static_cast<TC>(-1);
     }
 
