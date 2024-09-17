@@ -343,3 +343,4 @@ function(cutlass_practice_add_executable NAME)
 endfunction()
 
 add_subdirectory(basic)
+add_subdirectory(matrix_transpose)
