@@ -109,34 +109,66 @@ gemm_device(ProblemShape shape_MNK, CtaTiler cta_tiler,
     cute::clear(tCrC);
 
 #if 0
-    if(thread0()) {
-    print("  mA : "); print(  mA); print("\n");
-    print("  gA : "); print(  gA); print("\n");
-    print("  sA : "); print(  sA); print("\n");
-    print("tAgA : "); print(tAgA); print("\n");
-    print("tAsA : "); print(tAsA); print("\n");
-  }
+    if (cute::thread0()) {
+        cute::print("  mA : ");
+        cute::print(mA);
+        cute::print("\n");
+        cute::print("  gA : ");
+        cute::print(gA);
+        cute::print("\n");
+        cute::print("  sA : ");
+        cute::print(sA);
+        cute::print("\n");
+        cute::print("tAgA : ");
+        cute::print(tAgA);
+        cute::print("\n");
+        cute::print("tAsA : ");
+        cute::print(tAsA);
+        cute::print("\n");
+    }
 #endif
 
 #if 0
-    if(thread0()) {
-    print("  mB : "); print(  mB); print("\n");
-    print("  gB : "); print(  gB); print("\n");
-    print("  sB : "); print(  sB); print("\n");
-    print("tBgB : "); print(tBgB); print("\n");
-    print("tBsB : "); print(tBsB); print("\n");
-  }
+    if (cute::thread0()) {
+        cute::print("  mB : ");
+        cute::print(mB);
+        cute::print("\n");
+        cute::print("  gB : ");
+        cute::print(gB);
+        cute::print("\n");
+        cute::print("  sB : ");
+        cute::print(sB);
+        cute::print("\n");
+        cute::print("tBgB : ");
+        cute::print(tBgB);
+        cute::print("\n");
+        cute::print("tBsB : ");
+        cute::print(tBsB);
+        cute::print("\n");
+    }
 #endif
 
 #if 0
-    if(thread0()) {
-    print("  mC : "); print(  mC); print("\n");
-    print("  gC : "); print(  gC); print("\n");
-    print("tCsA : "); print(tCsA); print("\n");
-    print("tCsB : "); print(tCsB); print("\n");
-    print("tCgC : "); print(tCgC); print("\n");
-    print("tCrC : "); print(tCrC); print("\n");
-  }
+    if (cute::thread0()) {
+        cute::print("  mC : ");
+        cute::print(mC);
+        cute::print("\n");
+        cute::print("  gC : ");
+        cute::print(gC);
+        cute::print("\n");
+        cute::print("tCsA : ");
+        cute::print(tCsA);
+        cute::print("\n");
+        cute::print("tCsB : ");
+        cute::print(tCsB);
+        cute::print("\n");
+        cute::print("tCgC : ");
+        cute::print(tCgC);
+        cute::print("\n");
+        cute::print("tCrC : ");
+        cute::print(tCrC);
+        cute::print("\n");
+    }
 #endif
 
 #if 1
@@ -172,8 +204,10 @@ gemm_device(ProblemShape shape_MNK, CtaTiler cta_tiler,
             cute::copy(tCsB_p(cute::_, cute::_, k_block_next), tCrB(cute::_, cute::_, k_block_next));
 
             if (k_block == 0) {
-                cute::copy(copyA, tAgA(cute::_, cute::_, cute::_, k_tile_next), tAsA(cute::_, cute::_, cute::_, smem_pipe_write));
-                cute::copy(copyB, tBgB(cute::_, cute::_, cute::_, k_tile_next), tBsB(cute::_, cute::_, cute::_, smem_pipe_write));
+                cute::copy(copyA, tAgA(cute::_, cute::_, cute::_, k_tile_next),
+                           tAsA(cute::_, cute::_, cute::_, smem_pipe_write));
+                cute::copy(copyB, tBgB(cute::_, cute::_, cute::_, k_tile_next),
+                           tBsB(cute::_, cute::_, cute::_, smem_pipe_write));
                 cute::cp_async_fence();
                 --k_tile_count;
                 if (k_tile_count > 0) {

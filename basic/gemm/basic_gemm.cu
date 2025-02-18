@@ -10,7 +10,7 @@
 __global__
 void InitializeMatrix_kernel(float *matrix, int row, int column, int seed) {
   int i = threadIdx.x + blockIdx.x * blockDim.x;
-  int j = threadIdx.y + blockDim.y * blockDim.y;
+  int j = threadIdx.y + blockIdx.y * blockDim.y;
 
   if (i < row && j < column) {
     int offset = i + j * row;
