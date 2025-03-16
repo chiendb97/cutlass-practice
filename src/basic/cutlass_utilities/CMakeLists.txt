@@ -1,0 +1,4 @@
+add_executable(cutlass_utilities cutlass_utilities.cu)
+target_include_directories(cutlass_utilities PRIVATE ${CUTLASS_INCLUDE_DIRS})
+set_target_properties(cutlass_utilities PROPERTIES CUDA_ARCHITECTURES native)
+target_compile_options(cutlass_utilities PRIVATE --expt-relaxed-constexpr)

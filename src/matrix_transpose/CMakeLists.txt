@@ -1,0 +1,4 @@
+add_executable(matrix_transpose matrix_transpose.cu)
+target_include_directories(matrix_transpose PRIVATE ${CUTLASS_INCLUDE_DIRS})
+set_target_properties(matrix_transpose PROPERTIES CUDA_ARCHITECTURES native)
+target_compile_options(matrix_transpose PRIVATE --expt-relaxed-constexpr)

@@ -1,0 +1,10 @@
+add_executable(gemm_multistage_sm90 gemm_multistage_sm90.cu)
+target_include_directories(gemm_multistage_sm90 PRIVATE ${CUTLASS_INCLUDE_DIRS})
+set_target_properties(gemm_multistage_sm90 PROPERTIES CUDA_ARCHITECTURES native)
+target_compile_options(gemm_multistage_sm90 PRIVATE --expt-relaxed-constexpr)
+
+add_executable(gemm_warp_specialization_sm90 gemm_warp_specialization_sm90.cu)
+target_include_directories(gemm_warp_specialization_sm90 PRIVATE ${CUTLASS_INCLUDE_DIRS})
+target_include_directories(gemm_warp_specialization_sm90 PRIVATE gemm_warp_specialization)
+set_target_properties(gemm_warp_specialization_sm90 PROPERTIES CUDA_ARCHITECTURES native)
+target_compile_options(gemm_warp_specialization_sm90 PRIVATE --expt-relaxed-constexpr)
