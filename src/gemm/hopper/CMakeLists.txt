@@ -4,3 +4,4 @@ set_target_properties(gemm_sm90 PROPERTIES CUDA_ARCHITECTURES native)
 target_compile_options(gemm_sm90 PRIVATE --expt-relaxed-constexpr)
 
 add_subdirectory(pipeline_gemm)
+add_subdirectory(evt_gemm)
