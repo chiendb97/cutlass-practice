@@ -7,4 +7,4 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(CUTLASS_INCLUDE_DIRS ${CUTLASS_SOURCE_DIR}/include ${CUTLASS_SOURCE_DIR}/tools/util/include ${CUTLASS_SOURCE_DIR}/examples/common CACHE INTERNAL "")
 
-add_subdirectory(src)
+add_subdirectory(cpp)
