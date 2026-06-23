@@ -42,7 +42,10 @@ def _build_app():
 
     image = (
         modal.Image.from_registry(CUDA_IMAGE, add_python="3.12")
-        .pip_install("torch", "numpy", "ninja")
+        # torch pinned to a cu126 wheel to match the 12.6 CUDA_IMAGE (unpinned torch now resolves
+        # to a CUDA-13 build -> nvcc/torch version mismatch). wheel+setuptools are needed by the
+        # editable install (else `invalid command 'bdist_wheel'`).
+        .pip_install("torch==2.7.1", "numpy", "ninja", "wheel", "setuptools")
         .add_local_dir(
             str(REPO_ROOT),
             remote_path="/workspace",
@@ -53,7 +56,11 @@ def _build_app():
             ],
         )
         # Each kernel component has its own setup.py; build them all so any bench can run.
+        # add_python's standalone Python is clang-built, so distutils would link the .so with
+        # clang++ (absent in the image); nvcc compiles host code with g++ -- force g++ for the
+        # link too, otherwise the build fails with "command 'clang++' failed: No such file".
         .run_commands(
+            "export CC=gcc CXX=g++ LDSHARED='g++ -shared' LDCXXSHARED='g++ -shared'; "
             "for d in $(find /workspace/csrc/cute -name setup.py -exec dirname {} \\;); do "
             'pip install -e "$d" --no-build-isolation || exit 1; done'
         )
