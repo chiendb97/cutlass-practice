@@ -1,5 +1,0 @@
-add_executable(gemm_evt_sm90 gemm_evt_sm90.cu)
-target_include_directories(gemm_evt_sm90 PRIVATE ${CUTLASS_INCLUDE_DIRS})
-target_link_libraries(gemm_evt_sm90 PRIVATE -lcublas -lcurand)
-set_target_properties(gemm_evt_sm90 PROPERTIES CUDA_ARCHITECTURES native)
-target_compile_options(gemm_evt_sm90 PRIVATE --expt-relaxed-constexpr)

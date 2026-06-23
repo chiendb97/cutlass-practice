@@ -1,4 +1,0 @@
-add_subdirectory(cutlass_utilities)
-add_subdirectory(dump_reg_shmem)
-add_subdirectory(tile_iterator)
-add_subdirectory(cute)
