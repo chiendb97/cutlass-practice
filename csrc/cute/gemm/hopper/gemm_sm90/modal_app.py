@@ -2,9 +2,10 @@
 
 Standalone, co-located copy (one per component) — running ``bench_*.py --modal`` imports it from
 the same directory. Modal usage is fully optional; local benchmarking needs none of this. On
-``--modal`` the bench calls :func:`run_remote`, which builds an image that copies the repo (incl.
-the CUTLASS submodule), installs the extension on a CPU builder (nvcc cross-compiles for sm_90a),
-and re-runs that same benchmark script on an H100.
+``--modal`` the bench calls :func:`run_remote`, which builds an image (NGC PyTorch base, so torch +
+numpy + the matching CUDA toolkit are prebuilt) that copies CUTLASS and ``csrc`` as separate layers,
+installs **only this component's** extension on a CPU builder (nvcc cross-compiles for sm_90a), and
+re-runs that same benchmark script on an H100.
 
 Credentials and any auth/connection errors are left to Modal itself (it reads ~/.modal.toml or the
 MODAL_TOKEN_* env vars when the app launches). Modeled on gau-nernst/learn-cuda's Modal workflow,
@@ -30,8 +31,16 @@ def _repo_root() -> Path:
 
 
 REPO_ROOT = _repo_root()
+# This modal_app.py is co-located in its kernel component's dir (next to that component's setup.py),
+# so its parent IS the component dir. The image builds ONLY this component -- each bench/test loads
+# just its own ``<name>_C`` extension, so compiling the sibling components would be wasted work.
+COMPONENT_RELPATH = Path(__file__).resolve().parent.relative_to(REPO_ROOT).as_posix()
 GPU = os.environ.get("MODAL_GPU", "H100")
-CUDA_IMAGE = os.environ.get("MODAL_CUDA_IMAGE", "nvidia/cuda:12.6.2-devel-ubuntu22.04")
+# NGC PyTorch base: torch + numpy + the CUDA toolkit (nvcc) are prebuilt and version-matched, so we
+# need no torch pin and no clang->g++ linker hack (NGC's Python is gcc-built, unlike Modal's
+# add_python). nvcr.io/nvidia/pytorch is anonymously pullable -- no NGC key / Modal secret needed.
+# Override via MODAL_CUDA_IMAGE (any recent NGC pytorch tag bundles a matching torch+CUDA+nvcc).
+CUDA_IMAGE = os.environ.get("MODAL_CUDA_IMAGE", "nvcr.io/nvidia/pytorch:25.01-py3")
 
 
 # --- remote runner -----------------------------------------------------------------------
@@ -41,34 +50,40 @@ def _build_app():
     import modal  # type: ignore[import-not-found]  # optional extra (pip install -e 'python/[modal]')
 
     image = (
-        modal.Image.from_registry(CUDA_IMAGE, add_python="3.12")
-        # torch pinned to a cu126 wheel to match the 12.6 CUDA_IMAGE (unpinned torch now resolves
-        # to a CUDA-13 build -> nvcc/torch version mismatch). wheel+setuptools are needed by the
-        # editable install (else `invalid command 'bdist_wheel'`).
-        .pip_install("torch==2.7.1", "numpy", "ninja", "wheel", "setuptools")
+        # NGC PyTorch image already ships torch + numpy + the matching CUDA toolkit, and uses its
+        # own gcc-built Python -- so no add_python, no torch pin, and no clang->g++ linker hack.
+        modal.Image.from_registry(CUDA_IMAGE)
+        # Only the editable-build helpers; torch/numpy come from the base. (ninja/wheel/setuptools
+        # are usually present in NGC too, but pinning them here keeps the editable install robust.)
+        .pip_install("ninja", "wheel", "setuptools")
+        # --- repo copy split by volatility, so a code edit doesn't re-copy CUTLASS ---------------
+        # Layer A: the pinned CUTLASS submodule (~164 MB, ~never changes) -> cached across all edits.
         .add_local_dir(
-            str(REPO_ROOT),
-            remote_path="/workspace",
+            str(REPO_ROOT / "3rdparty" / "cutlass"),
+            remote_path="/workspace/3rdparty/cutlass",
             copy=True,
-            ignore=[
-                "**/.git", "**/cmake-build*", "**/build", "**/*.so",
-                "**/__pycache__", "**/*.nsys-rep",
-            ],
+            ignore=["**/.git", "**/__pycache__"],
         )
-        # Each kernel component has its own setup.py; build them all so any bench can run.
-        # add_python's standalone Python is clang-built, so distutils would link the .so with
-        # clang++ (absent in the image); nvcc compiles host code with g++ -- force g++ for the
-        # link too, otherwise the build fails with "command 'clang++' failed: No such file".
+        # Layer B: the source you edit (~2.3 MB) -> only this layer (+ the build below) re-runs on a
+        # code change. setup.py still finds the repo root via the /workspace/3rdparty/cutlass marker.
+        .add_local_dir(
+            str(REPO_ROOT / "csrc"),
+            remote_path="/workspace/csrc",
+            copy=True,
+            ignore=["**/cmake-build*", "**/build", "**/*.so", "**/__pycache__", "**/*.nsys-rep"],
+        )
+        # Build ONLY this component's extension (its setup.py compiles just its own *_binding.cu);
+        # each bench/test loads just this component's ``<name>_C``, so the siblings aren't compiled.
         .run_commands(
-            "export CC=gcc CXX=g++ LDSHARED='g++ -shared' LDCXXSHARED='g++ -shared'; "
-            "for d in $(find /workspace/csrc/cute -name setup.py -exec dirname {} \\;); do "
-            'pip install -e "$d" --no-build-isolation || exit 1; done'
+            f'pip install -e "/workspace/{COMPONENT_RELPATH}" --no-build-isolation'
         )
     )
 
     app = modal.App("cute-kernels-bench", image=image)
 
-    @app.function(gpu=GPU, timeout=1800)
+    # serialized=True: _remote is nested in _build_app (not module-global, because `modal` is
+    # imported lazily), which modal's @app.function otherwise rejects -- serialize it by value.
+    @app.function(gpu=GPU, timeout=1800, serialized=True)
     def _remote(bench_relpath: str, kwargs: dict) -> None:
         # Re-import the co-located bench script by its repo-relative path and run benchmark().
         import importlib.util
