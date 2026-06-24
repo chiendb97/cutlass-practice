@@ -42,6 +42,15 @@ def benchmark(B, H, S, D, dtype="fp16", iters=50):
     # two GEMMs of (S,S,D) and (S,D,S) per (B,H) -> 4*B*H*S*S*D
     flops = 4.0 * B * H * S * S * D
 
+    # The kernel runs natively in a BMHK (B, S, H, D) contiguous layout. Build the inputs in that
+    # layout ONCE here (outside the timed loop) and call the fmha_forward op, which does NO
+    # transpose -- so the timing reflects the kernel itself, not the BHMK<->BMHK layout copies.
+    # SDPA keeps the standard BHMK tensors (q/k/v). The BMHK output is transposed back to BHMK only
+    # for the correctness check (untimed), via row()'s `post` hook.
+    qb = q.transpose(1, 2).contiguous()  # (B, S, H, D) BMHK
+    kb = k.transpose(1, 2).contiguous()  # (B, S, H, D) BMHK
+    vb = v.transpose(1, 2).contiguous()  # (B, S, H, D) BMHK
+
     def time_ms(fn, warmup=10):
         for _ in range(warmup):
             fn()
@@ -54,10 +63,13 @@ def benchmark(B, H, S, D, dtype="fp16", iters=50):
         torch.cuda.synchronize()
         return start.elapsed_time(end) / iters
 
-    def row(name, fn, check=False):
+    def row(name, fn, check=False, post=None):
+        # `post` adjusts the output for the correctness check ONLY (e.g. BMHK->BHMK so it lines up
+        # with `ref`); it is applied outside time_ms so layout fixes never count toward the timing.
         try:
             out = fn()
-            err = (out.float() - ref).abs().max().item() if check else None
+            cmp = post(out) if post is not None else out
+            err = (cmp.float() - ref).abs().max().item() if check else None
             ms = time_ms(fn)
             line = f"  {name:<18} {ms:8.3f} ms   {flops / (ms * 1e-3) / 1e12:8.1f} TFLOP/s"
             if err is not None:
@@ -68,7 +80,10 @@ def benchmark(B, H, S, D, dtype="fp16", iters=50):
 
     print(f"\nfmha  B={B} H={H} S={S} D={D}  dtype={dtype}")
     row("torch sdpa", lambda: F.scaled_dot_product_attention(q, k, v, scale=scale))
-    row("cute fmha", lambda: torch.ops.cute_kernels.fmha_forward(q, k, v, scale), check=True)
+    # BMHK op: no transpose inside the call, so timing is the kernel only. Its (B,S,H,D) output
+    # is transposed back to (B,H,S,D) just for the ref comparison (untimed, via `post`).
+    row("cute fmha", lambda: torch.ops.cute_kernels.fmha_forward(qb, kb, vb, scale), check=True,
+        post=lambda o: o.transpose(1, 2))
 
 
 def main():

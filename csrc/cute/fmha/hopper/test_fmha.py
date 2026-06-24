@@ -35,7 +35,12 @@ def test_fmha_matches_sdpa(D, dtype):
     v = torch.randn(B, H, S, D, device="cuda", dtype=dtype)
     scale = 1.0 / (D ** 0.5)
 
-    out = torch.ops.cute_kernels.fmha_forward(q, k, v, scale)
+    # fmha_forward runs natively in BMHK (B, S, H, D); transpose the BHMK inputs into that layout,
+    # then transpose its BMHK output back to BHMK to line up with the SDPA reference.
+    qb = q.transpose(1, 2).contiguous()  # (B, S, H, D) BMHK
+    kb = k.transpose(1, 2).contiguous()  # (B, S, H, D) BMHK
+    vb = v.transpose(1, 2).contiguous()  # (B, S, H, D) BMHK
+    out = torch.ops.cute_kernels.fmha_forward(qb, kb, vb, scale).transpose(1, 2)
     assert out.shape == (B, H, S, D)
     assert out.dtype == dtype
     ref = F.scaled_dot_product_attention(q.float(), k.float(), v.float(), scale=scale)

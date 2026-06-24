@@ -2,21 +2,15 @@
 
 #include <cmath>
 #include <cstdint>
+#include <iostream>
 
 #include <cute/arch/cluster_sm90.hpp>
 #include <cute/layout.hpp>
 #include <cute/tensor.hpp>
 #include <cutlass/bfloat16.h>
 #include <cutlass/cluster_launch.hpp>
-#include <cutlass/layout/layout.h>
 #include <cutlass/numeric_conversion.h>
 #include <cutlass/numeric_types.h>
-#include <cutlass/util/GPU_Clock.hpp>
-#include <cutlass/util/command_line.h>
-#include <cutlass/util/helper_cuda.hpp>
-#include <cutlass/util/host_tensor.h>
-#include <cutlass/util/reference/device/tensor_fill.h>
-#include <cutlass/util/reference/host/tensor_fill.h>
 
 #include "copy_tensor.hpp"
 #include "gemm_tensor.hpp"
@@ -375,7 +369,7 @@ CUTLASS_GLOBAL void fmhaForward(PrecType const* Q, CUTE_GRID_CONSTANT TiledCopyQ
 
 template <typename PrecType, typename AccumType, int HEADDIM>
 void fmhaForwardDevice(int seqLen, int keyLen, int numHeads, int batchSize, PrecType const* tensorQ, PrecType const* tensorK,
-                       PrecType* tensorV, PrecType* tensorS, PrecType* tensorO, AccumType* miOut, AccumType* sPrimeOut, int iterations,
+                       PrecType* tensorV, PrecType* tensorS, PrecType* tensorO, AccumType* miOut, AccumType* sPrimeOut,
                        float scale, cudaStream_t stream = 0)
 {
     using namespace cute;
@@ -471,8 +465,6 @@ void fmhaForwardDevice(int seqLen, int keyLen, int numHeads, int batchSize, Prec
     auto smem_size =
         int(sizeof(SharedStorage<PrecType, decltype(smemLayoutQ), decltype(smemLayoutK), decltype(smemLayoutS), decltype(smemLayoutV)>));
 
-    std::cout << "smem_size = " << smem_size << std::endl;
-
     set_smem_size(smem_size, kernel);
 
     //
@@ -496,108 +488,10 @@ void fmhaForwardDevice(int seqLen, int keyLen, int numHeads, int batchSize, Prec
 
     auto nTilesOfK = ceil_div(size(N), size(bN{}));
 
-    std::cout << "nTileOfK = " << nTilesOfK << std::endl;
-
-    for (int i = 0; i < iterations; ++i)
-    {
-        cutlass::Status status = cutlass::launch_kernel_on_cluster(
-            params, kernel, ptrQ, tmaQ, tileShapeQ, smemLayoutQ, gmemLayoutQ, ptrK, tmaK, tileShapeK, smemLayoutK, gmemLayoutK, tensorS,
-            tileShapeS, smemLayoutS, gmemLayoutS, nTilesOfK, ptrV, tmaV, tileShapeV, smemLayoutV, gmemLayoutV, smemLayoutVt, tensorO, tmaO,
-            tileShapeO, gmemLayoutO, miOut, sPrimeOut, gmemLayoutMi, scale);
-    }
+    cutlass::launch_kernel_on_cluster(params, kernel, ptrQ, tmaQ, tileShapeQ, smemLayoutQ, gmemLayoutQ, ptrK, tmaK, tileShapeK, smemLayoutK,
+                                      gmemLayoutK, tensorS, tileShapeS, smemLayoutS, gmemLayoutS, nTilesOfK, ptrV, tmaV, tileShapeV,
+                                      smemLayoutV, gmemLayoutV, smemLayoutVt, tensorO, tmaO, tileShapeO, gmemLayoutO, miOut, sPrimeOut,
+                                      gmemLayoutMi, scale);
 }
-
-template <typename PrecType, typename AccumType, int HEADDIM>
-void fmhaForwardDeviceLoop(int seqLen, int keyLen, int numHeads, int batchSize, PrecType const* Q, PrecType const* K, PrecType* V,
-                           PrecType* S, PrecType* D, AccumType* miOut, AccumType* sPrimeOut, int iterations, int nStreams, float scale)
-{
-    if (nStreams == 1)
-    {
-        fmhaForwardDevice<PrecType, AccumType, HEADDIM>(seqLen, keyLen, numHeads, batchSize, Q, K, V, S, D, miOut, sPrimeOut, iterations,
-                                                        scale);
-    }
-    else
-    {
-        auto l = batchSize / nStreams;
-
-        for (int i = 0; i < nStreams; ++i)
-        {
-            cudaStream_t stream;
-            cudaStreamCreate(&stream);
-
-            auto offsetQ = i * seqLen * numHeads * HEADDIM * l;
-            auto offsetK = i * keyLen * numHeads * HEADDIM * l;
-            auto offsetV = i * keyLen * numHeads * HEADDIM * l;
-            auto offsetS = i * seqLen * numHeads * keyLen * l;
-            auto offsetD = i * seqLen * numHeads * HEADDIM * l;
-            auto offsetMi = i * seqLen * numHeads * l;
-
-            fmhaForwardDevice<PrecType, AccumType, HEADDIM>(seqLen, keyLen, numHeads, l, Q + offsetQ, K + offsetK, V + offsetV, S + offsetS,
-                                                            D + offsetD, miOut + offsetMi, sPrimeOut + offsetMi, iterations, scale);
-        }
-    }
-}
-
-template <typename PrecType, int HEADDIM>
-void runFmhaForward(int m, int n, int numHeads, int batchSize, int iterations, bool refCheck, bool printValues, int nStreams)
-{
-    constexpr float kLog2e = float(1.4426950408889634074);  // log2(M_E)
-    const float softmaxScale = 1.0f / sqrt(float(HEADDIM)); // 1/sqrt(d)
-    const float scale = softmaxScale * kLog2e;              // 1/sqrt(d) * log2(M_E)
-    cudaDeviceReset();
-    cute::device_init(0);
-    int k = HEADDIM;
-
-    std::cout << "M = " << m << std::endl;
-    std::cout << "N = " << n << std::endl;
-    std::cout << "K = " << k << std::endl;
-    std::cout << "Query BLK = " << kQueriesPerBlock << std::endl;
-    std::cout << "Key BLK = " << kKeysPerBlock << std::endl;
-
-    // auto mLong = uint64_t(m);
-    // auto nLong = uint64_t(n);
-    // auto kLong = uint64_t(k);
-    // auto lLong = uint64_t(batchSize * numHeads);
-
-    auto l = batchSize * numHeads;
-
-    std::cout << "L = " << l << " = " << batchSize << " * " << numHeads << std::endl;
-
-    cutlass::HostTensor<PrecType, cutlass::layout::RowMajor> Q({l, m * k});
-    cutlass::HostTensor<PrecType, cutlass::layout::RowMajor> K({l, n * k});
-    cutlass::HostTensor<PrecType, cutlass::layout::RowMajor> V({l, n * k});
-    cutlass::HostTensor<PrecType, cutlass::layout::RowMajor> S({l, m * n});
-    cutlass::HostTensor<PrecType, cutlass::layout::RowMajor> O({l, m * k});
-
-    uint64_t seed = 1405;
-
-    cutlass::reference::device::TensorFillRandomUniform(Q.device_view(), seed + 1);
-    cutlass::reference::device::TensorFillRandomUniform(K.device_view(), seed + 2);
-    cutlass::reference::device::TensorFillRandomUniform(V.device_view(), seed + 3);
-    cutlass::reference::device::TensorFill(S.device_view(), PrecType(-1));
-    cutlass::reference::device::TensorFill(O.device_view(), PrecType(-1));
-
-    Q.sync_host();
-    K.sync_host();
-    V.sync_host();
-    S.sync_host();
-    O.sync_host();
-
-    using AccumType = float;
-
-    cutlass::HostTensor<AccumType, cutlass::layout::RowMajor> miOut({l, m});
-    cutlass::HostTensor<AccumType, cutlass::layout::RowMajor> sPrimeOut({l, m});
-
-    // const int timing_iterations = iterations;
-    GPU_Clock timer;
-
-    double fmha_flops = double(4LL * batchSize * numHeads * m * n * k) / double(1.0e9);
-
-    fmhaForwardDeviceLoop<PrecType, AccumType, HEADDIM>(m, n, numHeads, batchSize, Q.device_data(), K.device_data(), V.device_data(),
-                                                        S.device_data(), O.device_data(), miOut.device_data(), sPrimeOut.device_data(),
-                                                        iterations, nStreams, scale);
-}
-
-void print_usage() {}
 
 }  // namespace cute_fmha
