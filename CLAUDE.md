@@ -92,6 +92,11 @@ Conventions that matter when editing:
 - Binding GEMMs compute `a @ b.T` for `a=(M,K)`, `b=(N,K)` row-major. Output stride differs by
   kernel: gemm_sm90 & evt write **column-major** C; multistage & warp-spec write **row-major** —
   the binding wrappers handle this via a `(N,M)` buffer + transpose where needed.
+- The **fmha_forward op is BMHK** — q/k/v/o are `(B, S, H, D)` **contiguous** (heads interleaved
+  within each sequence position), and the binding does **no transpose** (zero-copy); callers that
+  hold BHSD must convert themselves. Head dim `D` is a compile-time template, so it must be
+  **64, 128, or 256**. The binding multiplies `scale` by `log2(e)` before the device call (the
+  online softmax uses `exp2`); `scale` defaults to `1/sqrt(D)`.
 
 When adding a kernel, everything stays in the kernel's own directory. Put the kernel + namespaced
 launcher in a `.cuh`, then add these siblings next to it:
@@ -99,7 +104,8 @@ launcher in a `.cuh`, then add these siblings next to it:
   exactly one family header.
 - `setup.py` — copy a sibling's verbatim and edit only the `# --- this component ---` block:
   `EXT_NAME = "<name>_C"`, `SOURCES = ["<name>_binding.cu"]`, optional `EXTRA_INCLUDE_DIRS` /
-  `LIBRARIES` (e.g. evt sets `LIBRARIES=["cublas"]`, fmha sets `EXTRA_INCLUDE_DIRS=["lib/gemm"]`).
+  `LIBRARIES` (e.g. evt sets `LIBRARIES=["cublas"]`, fmha sets `EXTRA_INCLUDE_DIRS=["lib/gemm"]`,
+  warp-spec sets `EXTRA_INCLUDE_DIRS=["kernel"]` for its impl headers grouped under `kernel/`).
   It self-locates the repo root, so it's depth-agnostic. Build with `pip install -e <component dir>`.
 - `test_<name>.py` — **standalone**: load the ext (`torch.ops.load_library(importlib.util.find_spec
   ("<name>_C").origin)`), then define its own `requires_hopper` skip (capability major==9), inputs,
@@ -117,4 +123,3 @@ its launcher live in the `.cuh` that binding includes. There is no CMake build a
 `main()` — kernels are exercised only through the PyTorch bindings. After adding a component,
 `python scripts/gen_clangd.py` refreshes IntelliSense
 include paths (the script lists the component dirs explicitly — add the new one there).
-```
